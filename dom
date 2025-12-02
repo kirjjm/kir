@@ -12,3 +12,4 @@ begin
     outputs := (list 'stdout' 'file');
   end;
 end
+
