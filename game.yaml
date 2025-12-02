@@ -1,0 +1,13 @@
+player:
+  name: 'Hero'
+  hp: 120
+  inventory:
+    - 'sword'
+    - 'potion'
+enemies:
+  -
+    name: 'Slime'
+    hp: 30
+  -
+    name: 'Dragon'
+    hp: 140

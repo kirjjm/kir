@@ -1,0 +1,10 @@
+server:
+  host: 'localhost'
+  ports:
+    - 8010
+    - 8020
+logging:
+  level: 'info'
+  outputs:
+    - 'stdout'
+    - 'file'

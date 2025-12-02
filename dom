@@ -1,0 +1,14 @@
+var baseport 8000
+var step 10
+
+begin
+  server := begin
+    host := 'localhost';
+    ports := (list ^[baseport step +] ^[baseport step step + +]);
+  end;
+
+  logging := begin
+    level := 'info';
+    outputs := (list 'stdout' 'file');
+  end;
+end

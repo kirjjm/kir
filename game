@@ -1,0 +1,21 @@
+var basehp 100
+var lvlup 20
+
+begin
+  player := begin
+    name := 'Hero';
+    hp := ^[basehp lvlup +];
+    inventory := (list 'sword' 'potion');
+  end;
+
+  enemies := (list
+    begin
+      name := 'Slime';
+      hp := 30;
+    end
+    begin
+      name := 'Dragon';
+      hp := ^[basehp lvlup lvlup + +];
+    end
+  );
+end
