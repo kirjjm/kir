@@ -1,13 +1,8 @@
 import re
 import argparse
 import sys
-from dataclasses import dataclass
-
-
-@dataclass
-class Token:
-    type: str
-    value: str
+from lark import Lark, Transformer, v_args
+from lark.exceptions import LarkError
 
 
 def remove_comments(text: str) -> str:
@@ -30,11 +25,9 @@ def parse_number(s: str):
 def eval_const_expr(expr_text: str, consts: dict):
     if not (expr_text.startswith("^[") and expr_text.endswith("]")):
         raise SyntaxError(f"Некорректное константное выражение: {expr_text}")
-
     inner = expr_text[2:-1].strip()
     if not inner:
         raise SyntaxError("Пустое константное выражение")
-
     stack = []
     for tok in inner.split():
         if is_number(tok):
@@ -60,142 +53,99 @@ def eval_const_expr(expr_text: str, consts: dict):
             print(value)
         else:
             raise SyntaxError(f"Неизвестный токен в константном выражении: {tok}")
-
     if len(stack) != 1:
         raise SyntaxError("Лишние значения в стеке константного выражения")
     return stack[0]
 
 
-def extract_consts(text: str):
-    consts = {}
-    other_lines = []
+GRAMMAR = r"""
+start: const_def* dict
 
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("var "):
-            parts = stripped.split(None, 3)
-            if len(parts) < 3:
-                raise SyntaxError(f"Неверная строка константы: {line}")
-            _, name, value_str = parts[0], parts[1], " ".join(parts[2:])
+const_def: "var" IDENT const_value
 
-            if is_number(value_str):
-                value = parse_number(value_str)
-            elif re.fullmatch(r"'[^']*'", value_str):
-                value = value_str[1:-1]
-            elif value_str.startswith("^[") and value_str.endswith("]"):
-                value = eval_const_expr(value_str, consts)
-            elif value_str in consts:
-                value = consts[value_str]
-            else:
-                raise SyntaxError(f"Неподдерживаемое значение константы: {value_str}")
+?const_value: number
+            | string
+            | const_expr
+            | IDENT      -> const_ref_in_def
 
-            consts[name] = value
-        else:
-            other_lines.append(line)
+?value: number
+      | string
+      | array
+      | dict
+      | const_expr
+      | IDENT          -> const_ref_in_value
 
-    new_text = "\n".join(other_lines)
-    return new_text, consts
+number: NUMBER
+string: STRING
+array: "(" "list" value* ")"
+dict: "begin" stmt* "end"
+stmt: IDENT ":=" value ";"
+const_expr: CONST_EXPR
 
+IDENT: /[A-Za-z]+/
+STRING: /'[^']*'/
+CONST_EXPR: /\^\[[^\]]*\]/
+NUMBER: /\d+\.\d*|\d+/
 
-TOKEN_RE = re.compile(
-    r"(?P<WS>\s+)|(?P<ASSIGN>:=)|(?P<SEMICOLON>;)|(?P<LPAREN>\()|(?P<RPAREN>\))|(?P<BEGIN>\bbegin\b)|(?P<END>\bend\b)|(?P<LIST>\blist\b)|(?P<CONST_EXPR>\^\[.*?\])|(?P<STRING>'[^']*')|(?P<NUMBER>\d+\.\d*|\d+)|(?P<IDENT>[a-zA-Z]+)"
-)
+%import common.WS
+%ignore WS
+"""
 
 
-def tokenize(text: str):
-    tokens = []
-    pos = 0
-    while pos < len(text):
-        match = TOKEN_RE.match(text, pos)
-        if not match:
-            raise SyntaxError(f"Неожиданный символ {text[pos]!r} на позиции {pos}")
-        kind = match.lastgroup
-        value = match.group(kind)
-        pos = match.end()
+@v_args(inline=True)
+class ConfigTransformer(Transformer):
+    def __init__(self):
+        super().__init__()
+        self.consts = {}
 
-        if kind == "WS":
-            continue
-        tokens.append(Token(kind, value))
+    def number(self, token):
+        s = str(token)
+        return float(s) if "." in s else int(s)
 
-    tokens.append(Token("EOF", ""))
-    return tokens
+    def string(self, token):
+        s = str(token)
+        return s[1:-1]
+
+    def const_expr(self, token):
+        return eval_const_expr(str(token), self.consts)
+
+    def const_ref_in_def(self, name_token):
+        name = str(name_token)
+        if name not in self.consts:
+            raise ValueError(f"Неизвестная константа в определении: {name}")
+        return self.consts[name]
+
+    def const_ref_in_value(self, name_token):
+        name = str(name_token)
+        if name not in self.consts:
+            raise ValueError(f"Неизвестная константа: {name}")
+        return self.consts[name]
+
+    def const_def(self, name_token, value):
+        name = str(name_token)
+        self.consts[name] = value
+        return None
+
+    def stmt(self, name_token, value):
+        return str(name_token), value
+
+    def dict(self, *stmts):
+        d = {}
+        for k, v in stmts:
+            d[k] = v
+        return d
+
+    def array(self, *values):
+        return list(values)
+
+    def start(self, *items):
+        for item in reversed(items):
+            if item is not None:
+                return item
+        return None
 
 
-class Parser:
-    def __init__(self, tokens, consts):
-        self.tokens = tokens
-        self.pos = 0
-        self.consts = consts
-
-    @property
-    def current(self):
-        return self.tokens[self.pos]
-
-    def eat(self, expected_type: str):
-        if self.current.type != expected_type:
-            raise SyntaxError(
-                f"Ожидался {expected_type}, а встретился {self.current.type} ({self.current.value})"
-            )
-        self.pos += 1
-
-    def parse(self):
-        return self.parse_dict()
-
-    def parse_dict(self):
-        result = {}
-        self.eat("BEGIN")
-        while self.current.type != "END":
-            if self.current.type != "IDENT":
-                raise SyntaxError("Ожидалось имя поля в словаре")
-            name = self.current.value
-            self.eat("IDENT")
-            self.eat("ASSIGN")
-            value = self.parse_value()
-            self.eat("SEMICOLON")
-            result[name] = value
-        self.eat("END")
-        return result
-
-    def parse_value(self):
-        tok = self.current
-
-        if tok.type == "NUMBER":
-            self.eat("NUMBER")
-            return parse_number(tok.value)
-
-        if tok.type == "STRING":
-            self.eat("STRING")
-            return tok.value[1:-1]
-
-        if tok.type == "LPAREN":
-            return self.parse_array()
-
-        if tok.type == "BEGIN":
-            return self.parse_dict()
-
-        if tok.type == "CONST_EXPR":
-            self.eat("CONST_EXPR")
-            return eval_const_expr(tok.value, self.consts)
-
-        if tok.type == "IDENT":
-            name = tok.value
-            self.eat("IDENT")
-            if name in self.consts:
-                return self.consts[name]
-            raise SyntaxError(f"Неизвестная константа или недопустимое значение: {name}")
-
-        raise SyntaxError(f"Неожиданное значение: {tok.type} {tok.value}")
-
-    def parse_array(self):
-        items = []
-        self.eat("LPAREN")
-        self.eat("LIST")
-
-        while self.current.type != "RPAREN":
-            items.append(self.parse_value())
-
-        self.eat("RPAREN")
-        return items
+parser = Lark(GRAMMAR, parser="lalr", start="start")
 
 
 def format_scalar(value):
@@ -208,7 +158,6 @@ def format_scalar(value):
 
 def to_yaml(value, indent: int = 0) -> str:
     space = "  " * indent
-
     if isinstance(value, dict):
         lines = []
         for key, val in value.items():
@@ -218,7 +167,6 @@ def to_yaml(value, indent: int = 0) -> str:
             else:
                 lines.append(f"{space}{key}: {format_scalar(val)}")
         return "\n".join(lines)
-
     elif isinstance(value, list):
         lines = []
         for item in value:
@@ -228,18 +176,15 @@ def to_yaml(value, indent: int = 0) -> str:
             else:
                 lines.append(f"{space}- {format_scalar(item)}")
         return "\n".join(lines)
-
     else:
         return f"{space}{format_scalar(value)}"
 
 
 def translate_text(text: str):
     text = remove_comments(text)
-    text, consts = extract_consts(text)
-    tokens = tokenize(text)
-    parser = Parser(tokens, consts)
-    data = parser.parse()
-    return data
+    tree = parser.parse(text)
+    transformer = ConfigTransformer()
+    return transformer.transform(tree)
 
 
 def translate_text_to_yaml(text: str) -> str:
@@ -249,10 +194,8 @@ def translate_text_to_yaml(text: str) -> str:
 def translate_file(input_path: str, output_path: str):
     with open(input_path, "r", encoding="utf-8") as f:
         text = f.read()
-
     data = translate_text(text)
     yaml_str = to_yaml(data)
-
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(yaml_str)
 
@@ -374,36 +317,33 @@ def run_tests():
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Перевод учебного конфигурационного языка в YAML"
+    cli = argparse.ArgumentParser(
+        description="Перевод учебного конфигурационного языка (вариант 28, Lark) в YAML"
     )
-    parser.add_argument("-i", "--input", help="входной файл с конфигурацией")
-    parser.add_argument("-o", "--output", help="выходной YAML-файл")
-    parser.add_argument(
+    cli.add_argument("-i", "--input", help="входной файл с конфигурацией")
+    cli.add_argument("-o", "--output", help="выходной YAML-файл")
+    cli.add_argument(
         "--run-tests",
         action="store_true",
         help="запустить встроенные тесты и выйти",
     )
 
-    args = parser.parse_args()
+    args = cli.parse_args()
 
     if args.run_tests:
         run_tests()
         return
 
     if not args.input or not args.output:
-        parser.error("нужно указать и -i, и -o (или использовать --run-tests)")
+        cli.error("нужно указать и -i, и -o (или использовать --run-tests)")
 
     try:
         translate_file(args.input, args.output)
         print(f"Готово: результат записан в {args.output}")
-    except (SyntaxError, ValueError) as e:
-        print("Синтаксическая ошибка:", e)
+    except (LarkError, SyntaxError, ValueError) as e:
+        print("Синтаксическая ошибка:", e, file=sys.stderr)
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-
-
-

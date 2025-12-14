@@ -29,7 +29,7 @@
 6. функцию `main()` для работы через командную строку (аргументы `-i`, `-o`, `--run-tests`) и функцию `run_tests()` для автоматического тестирования.
 
 Тесты:
---> Программа для запуска:
+Программа для запуска:
 – запуск встроенных тестов:
 `python main.py --run-tests`
 – перевод конфигурации веб-сервера (`dom`):
@@ -38,7 +38,6 @@
 `python main.py -i game -o game.yaml`
 – перевод конфига базы данных (`base`):
 `python main.py -i base -o base.yaml`
-
 – проверка конфигурации с ошибкой (`error_test.conf`):
 `python main.py -i error_test.conf -o error_out.yaml`
 
